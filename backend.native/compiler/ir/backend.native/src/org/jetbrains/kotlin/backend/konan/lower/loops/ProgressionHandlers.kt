@@ -8,9 +8,11 @@ import org.jetbrains.kotlin.backend.konan.lower.matchers.SimpleCalleeMatcher
 import org.jetbrains.kotlin.backend.konan.lower.matchers.createIrCallMatcher
 import org.jetbrains.kotlin.backend.konan.lower.matchers.singleArgumentExtension
 import org.jetbrains.kotlin.ir.builders.irCall
+import org.jetbrains.kotlin.ir.builders.irGet
+import org.jetbrains.kotlin.ir.builders.irInt
+import org.jetbrains.kotlin.ir.declarations.IrValueDeclaration
 import org.jetbrains.kotlin.ir.expressions.*
 import org.jetbrains.kotlin.ir.expressions.impl.IrCallImpl
-import org.jetbrains.kotlin.ir.expressions.impl.IrConstImpl
 import org.jetbrains.kotlin.ir.symbols.IrClassSymbol
 import org.jetbrains.kotlin.ir.types.*
 import org.jetbrains.kotlin.ir.visitors.IrElementVisitor
@@ -25,8 +27,8 @@ internal class RangeToHandler(val progressionElementClasses: Collection<IrClassS
         parameter(0) { it.type.classifierOrNull in progressionElementClasses }
     }
 
-    override fun build(call: IrCall, progressionType: ProgressionType) =
-            ProgressionInfo(progressionType, call.dispatchReceiver!!, call.getValueArgument(0)!!)
+    override fun build(call: IrCall, data: ProgressionType) =
+            ProgressionHeaderInfo(data, call.dispatchReceiver!!, call.getValueArgument(0)!!)
 }
 
 internal class DownToHandler(val progressionElementClasses: Collection<IrClassSymbol>) : ProgressionHandler {
@@ -35,8 +37,8 @@ internal class DownToHandler(val progressionElementClasses: Collection<IrClassSy
         parameter(0) { it.type.classifierOrNull in progressionElementClasses }
     }
 
-    override fun build(call: IrCall, progressionType: ProgressionType): ProgressionInfo? =
-            ProgressionInfo(progressionType,
+    override fun build(call: IrCall, data: ProgressionType): HeaderInfo? =
+            ProgressionHeaderInfo(data,
                     call.extensionReceiver!!,
                     call.getValueArgument(0)!!,
                     increasing = false)
@@ -48,8 +50,8 @@ internal class UntilHandler(val progressionElementClasses: Collection<IrClassSym
         parameter(0) { it.type.classifierOrNull in progressionElementClasses }
     }
 
-    override fun build(call: IrCall, progressionType: ProgressionType): ProgressionInfo? =
-            ProgressionInfo(progressionType,
+    override fun build(call: IrCall, data: ProgressionType): HeaderInfo? =
+            ProgressionHeaderInfo(data,
                     call.extensionReceiver!!,
                     call.getValueArgument(0)!!,
                     closed = false)
@@ -69,21 +71,20 @@ internal class IndicesHandler(val context: Context) : ProgressionHandler {
         extensionReceiver { it != null && it.type.classifierOrNull in supportedArrays }
     }
 
-    override fun build(call: IrCall, progressionType: ProgressionType): ProgressionInfo? {
-        val int0 = IrConstImpl.int(call.startOffset, call.endOffset, context.irBuiltIns.intType, 0)
-
-        val bound = with(context.createIrBuilder(call.symbol, call.startOffset, call.endOffset)) {
-            val clazz = call.extensionReceiver!!.type.classifierOrFail
-            val symbol = symbols.arraySize[clazz]!!
-            irCall(symbol).apply {
-                dispatchReceiver = call.extensionReceiver
+    override fun build(call: IrCall, data: ProgressionType): HeaderInfo? =
+            with(context.createIrBuilder(call.symbol, call.startOffset, call.endOffset)) {
+                val lowerBound = irInt(0)
+                val clazz = call.extensionReceiver!!.type.classifierOrFail
+                val symbol = symbols.arraySize[clazz]!!
+                val upperBound = irCall(symbol).apply {
+                    dispatchReceiver = call.extensionReceiver
+                }
+                ProgressionHeaderInfo(data, lowerBound, upperBound, closed = false)
             }
-        }
-        return ProgressionInfo(progressionType, int0, bound, closed = false)
-    }
+
 }
 
-internal class StepHandler(context: Context, val visitor: IrElementVisitor<ProgressionInfo?, Nothing?>) : ProgressionHandler {
+internal class StepHandler(context: Context, val visitor: IrElementVisitor<HeaderInfo?, Nothing?>) : ProgressionHandler {
     private val symbols = context.ir.symbols
 
     override val matcher: IrCallMatcher = SimpleCalleeMatcher {
@@ -91,23 +92,27 @@ internal class StepHandler(context: Context, val visitor: IrElementVisitor<Progr
         parameter(0) { it.type.isInt() || it.type.isLong() }
     }
 
-    override fun build(call: IrCall, progressionType: ProgressionType): ProgressionInfo? {
+    private fun isDefaultStep(step: IrExpression?) =
+            step == null || (step.isPositiveConst() && (step as IrConst<*>).stepIsOne())
+
+    override fun build(call: IrCall, data: ProgressionType): HeaderInfo? {
         val nestedInfo = call.extensionReceiver!!.accept(visitor, null)
                 ?: return null
 
         // Due to KT-27607 nested non-default steps could lead to incorrect behaviour.
         // So disable optimization of such rare cases for now.
-        if (nestedInfo.step != null) {
+        if (!isDefaultStep(nestedInfo.step)) {
             return null
         }
 
         val newStep = call.getValueArgument(0)!!
-        val (newStepCheck, needBoundCalculation) = irCheckProgressionStep(symbols, progressionType, newStep)
-        return ProgressionInfo(
-                progressionType,
-                nestedInfo.first,
-                nestedInfo.bound,
-                newStepCheck, nestedInfo.increasing,
+        val (newStepCheck, needBoundCalculation) = irCheckProgressionStep(symbols, data, newStep)
+        return ProgressionHeaderInfo(
+                data,
+                nestedInfo.lowerBound,
+                nestedInfo.upperBound,
+                newStepCheck,
+                nestedInfo.increasing,
                 needBoundCalculation,
                 nestedInfo.closed)
     }
@@ -145,3 +150,43 @@ internal class StepHandler(context: Context, val visitor: IrElementVisitor<Progr
                 } to true
             }
 }
+
+internal class ArrayIterationHandler(val context: Context) : HeaderInfoHandler<Nothing?> {
+
+    private val symbols = context.ir.symbols
+    private val supportedArrays = symbols.arrays
+
+    // No support for rare cases like `T : IntArray` for now.
+    override val matcher = createIrCallMatcher {
+        origin { it == IrStatementOrigin.FOR_LOOP_ITERATOR }
+        dispatchReceiver { it != null && (it.type.classifierOrNull in supportedArrays) }
+    }
+
+    // Consider case like `for (elem in A) { f(elem) }`
+    // If we lower it to `for (i in A.indices) { f(A[i]) }`
+    // Then we will break program behaviour if A is an expression with side-effect.
+    // Instead, we lower it to
+    // ```
+    // val a = A
+    // for (i in a.indices) { f(a[i]) }
+    // ```
+    private fun shouldCreateTemporaryVariable(collectionProducer: IrCall) =
+            collectionProducer.dispatchReceiver !is IrValueDeclaration
+
+    override fun build(call: IrCall, data: Nothing?): HeaderInfo? =
+            with(context.createIrBuilder(call.symbol, call.startOffset, call.endOffset)) {
+                val (collectionReference, isNewDeclaration) = if (shouldCreateTemporaryVariable(call)) {
+                    scope.createTemporaryVariable(call.dispatchReceiver!!) to true
+                } else {
+                    call.dispatchReceiver as IrValueDeclaration to false
+                }
+                val clazz = collectionReference.type.classifierOrFail
+                val arraySizeSymbol = symbols.arraySize[clazz]!!
+                val upperBound = irCall(arraySizeSymbol).apply {
+                    dispatchReceiver = irGet(collectionReference)
+                }
+                ArrayHeaderInfo(irInt(0), upperBound, irInt(1), collectionReference, isNewDeclaration)
+            }
+}
+
+

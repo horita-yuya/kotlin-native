@@ -306,7 +306,6 @@ internal class KonanSymbols(context: Context, val symbolTable: SymbolTable, val 
                 } ?: error(descriptor.toString())
         return symbolTable.referenceSimpleFunction(functionDescriptor)
     }
-
     override val copyRangeTo = arrays.map { symbol ->
         val packageViewDescriptor = builtIns.builtInsModule.getPackage(KotlinBuiltIns.COLLECTIONS_PACKAGE_FQ_NAME)
         val functionDescriptor = packageViewDescriptor.memberScope
@@ -317,13 +316,19 @@ internal class KonanSymbols(context: Context, val symbolTable: SymbolTable, val 
         symbol.descriptor to symbolTable.referenceSimpleFunction(functionDescriptor)
     }.toMap()
 
-    val arrayGet = array.descriptor.unsubstitutedMemberScope
-            .getContributedFunctions(Name.identifier("get"), NoLookupLocation.FROM_BACKEND)
-            .single().let { symbolTable.referenceSimpleFunction(it) }
+    val arrayGet = arrays.associateBy(
+            { it },
+            { it.descriptor.unsubstitutedMemberScope
+                    .getContributedFunctions(Name.identifier("get"), NoLookupLocation.FROM_BACKEND)
+                    .single().let { symbolTable.referenceSimpleFunction(it) } }
+    )
 
-    val arraySet = array.descriptor.unsubstitutedMemberScope
-            .getContributedFunctions(Name.identifier("set"), NoLookupLocation.FROM_BACKEND)
-            .single().let { symbolTable.referenceSimpleFunction(it) }
+    val arraySet = arrays.associateBy(
+            { it },
+            { it.descriptor.unsubstitutedMemberScope
+                    .getContributedFunctions(Name.identifier("set"), NoLookupLocation.FROM_BACKEND)
+                    .single().let { symbolTable.referenceSimpleFunction(it) } }
+    )
 
     val arraySize = arrays.associateBy(
             { it },
@@ -331,8 +336,6 @@ internal class KonanSymbols(context: Context, val symbolTable: SymbolTable, val 
                     .getContributedVariables(Name.identifier("size"), NoLookupLocation.FROM_BACKEND)
                     .single().let { symbolTable.referenceSimpleFunction(it.getter!!) } }
     )
-
-
 
     val valuesForEnum = symbolTable.referenceSimpleFunction(
             context.getInternalFunctions("valuesForEnum").single())
