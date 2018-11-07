@@ -190,7 +190,7 @@ internal class CallableReferenceLowering(val context: Context): FileLoweringPass
                 lastParameterType as IrSimpleType
                 // If the last parameter is Continuation<> inherit from SuspendFunction.
                 suspendFunctionIrClass = symbols.suspendFunctions[numberOfParameters - 1].owner
-                var suspendFunctionClassTypeParameters = functionParameterTypes.dropLast(1) +
+                val suspendFunctionClassTypeParameters = functionParameterTypes.dropLast(1) +
                         (lastParameterType.arguments.single().typeOrNull ?: irBuiltIns.anyNType)
                 superTypes += suspendFunctionIrClass.symbol.typeWith(suspendFunctionClassTypeParameters)
             }
@@ -248,7 +248,8 @@ internal class CallableReferenceLowering(val context: Context): FileLoweringPass
                 functionReferenceClass.addChild(it.ir)
             }
 
-            functionReferenceClass.setSuperSymbolsAndAddFakeOverrides(superTypes)
+            functionReferenceClass.superTypes += superTypes
+            functionReferenceClass.addFakeOverrides()
 
             return BuiltFunctionReference(functionReferenceClass, constructorBuilder.ir)
         }
@@ -383,6 +384,8 @@ internal class CallableReferenceLowering(val context: Context): FileLoweringPass
                     superFunctionSymbol.owner.valueParameters.mapTo(this.valueParameters) {
                         it.copy(descriptor.valueParameters[it.index]) // FIXME: substitute
                     }
+
+                    overriddenSymbols += superFunctionSymbol
 
                     body = irBuilder.irBlockBody(startOffset, endOffset) {
                         +irReturn(
