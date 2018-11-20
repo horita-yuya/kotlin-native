@@ -97,10 +97,11 @@ internal class ExpectDeclarationsRemoving(val context: Context) : FileLoweringPa
             override fun getReferencedClassOrNull(symbol: IrClassSymbol?) =
                     symbol?.let { getReferencedClass(it) }
 
-            override fun getReferencedClassifier(symbol: IrClassifierSymbol) =
-                    if (symbol is IrClassSymbol)
-                        getReferencedClass(symbol)
-                    else super.getReferencedClassifier(symbol)
+            override fun getReferencedClassifier(symbol: IrClassifierSymbol): IrClassifierSymbol = when (symbol) {
+                is IrClassSymbol -> getReferencedClass(symbol)
+                is IrTypeParameterSymbol -> remapExpectTypeParameter(symbol).symbol
+                else -> error("Unexpected symbol $symbol ${symbol.descriptor}")
+            }
 
             override fun getReferencedConstructor(symbol: IrConstructorSymbol) =
                     if (symbol.descriptor.isExpect)
@@ -119,9 +120,9 @@ internal class ExpectDeclarationsRemoving(val context: Context) : FileLoweringPa
                 symbol.descriptor.propertyIfAccessor.isExpect -> {
                     val property = symbol.owner.correspondingProperty!!
                     val actualPropertyDescriptor = property.descriptor.findActualForExpect()
-                    val accessorDescriptor = when {
-                        property.getter == symbol.owner -> actualPropertyDescriptor.getter!!
-                        property.setter == symbol.owner -> actualPropertyDescriptor.setter!!
+                    val accessorDescriptor = when (symbol.owner) {
+                        property.getter -> actualPropertyDescriptor.getter!!
+                        property.setter -> actualPropertyDescriptor.setter!!
                         else -> error("Unexpected accessor of $symbol ${symbol.descriptor}")
                     }
                     context.ir.symbols.symbolTable.referenceFunction(accessorDescriptor) as IrSimpleFunctionSymbol
@@ -131,12 +132,22 @@ internal class ExpectDeclarationsRemoving(val context: Context) : FileLoweringPa
             }
 
             override fun getReferencedValue(symbol: IrValueSymbol) =
-                    (symbol as? IrValueParameterSymbol)?.let { remapExpectValue(symbol) }?.symbol
-                        ?: super.getReferencedValue(symbol)
+                    remapExpectValue(symbol)?.symbol ?: super.getReferencedValue(symbol)
         }
 
         val symbolRemapper = SymbolRemapper()
         return transform(DeepCopyIrTreeWithSymbols(symbolRemapper, DeepCopyTypeRemapper(symbolRemapper)), data = null)
+    }
+
+    private fun remapExpectTypeParameter(symbol: IrTypeParameterSymbol): IrTypeParameter {
+        val parameter = symbol.owner
+        val parent = parameter.parent
+
+        return when (parent) {
+            is IrClass -> parent.findActualForExpected().typeParameters[parent.typeParameters.indexOf(parameter)]
+            is IrFunction -> parent.findActualForExpected().typeParameters[parent.typeParameters.indexOf(parameter)]
+            else -> error(parent)
+        }
     }
 
     private fun remapExpectValue(symbol: IrValueSymbol): IrValueParameter? {
@@ -153,13 +164,9 @@ internal class ExpectDeclarationsRemoving(val context: Context) : FileLoweringPa
                 parent.findActualForExpected().thisReceiver!!
             }
 
-            is IrFunction -> when {
-                parameter == parent.dispatchReceiverParameter ->
-                    parent.findActualForExpected().dispatchReceiverParameter!!
-
-                parameter == parent.extensionReceiverParameter ->
-                    parent.findActualForExpected().extensionReceiverParameter!!
-
+            is IrFunction -> when (parameter) {
+                parent.dispatchReceiverParameter -> parent.findActualForExpected().dispatchReceiverParameter!!
+                parent.extensionReceiverParameter -> parent.findActualForExpected().extensionReceiverParameter!!
                 else -> {
                     assert(parent.valueParameters[parameter.index] == parameter)
                     parent.findActualForExpected().valueParameters[parameter.index]
