@@ -144,8 +144,16 @@ internal class ExpectDeclarationsRemoving(val context: Context) : FileLoweringPa
         val parent = parameter.parent
 
         return when (parent) {
-            is IrClass -> parent.findActualForExpected().typeParameters[parameter.index]
-            is IrFunction -> parent.findActualForExpected().typeParameters[parameter.index]
+            is IrClass ->
+                if (!parent.descriptor.isExpect)
+                    parameter
+                else parent.findActualForExpected().typeParameters[parameter.index]
+
+            is IrFunction ->
+                if (!parent.descriptor.isExpect)
+                    parameter
+                else parent.findActualForExpected().typeParameters[parameter.index]
+
             else -> error(parent)
         }
     }
@@ -159,19 +167,25 @@ internal class ExpectDeclarationsRemoving(val context: Context) : FileLoweringPa
         val parent = parameter.parent
 
         return when (parent) {
-            is IrClass -> {
-                assert(parameter == parent.thisReceiver)
-                parent.findActualForExpected().thisReceiver!!
-            }
-
-            is IrFunction -> when (parameter) {
-                parent.dispatchReceiverParameter -> parent.findActualForExpected().dispatchReceiverParameter!!
-                parent.extensionReceiverParameter -> parent.findActualForExpected().extensionReceiverParameter!!
-                else -> {
-                    assert(parent.valueParameters[parameter.index] == parameter)
-                    parent.findActualForExpected().valueParameters[parameter.index]
+            is IrClass ->
+                if (!parent.descriptor.isExpect)
+                    null
+                else {
+                    assert(parameter == parent.thisReceiver)
+                    parent.findActualForExpected().thisReceiver!!
                 }
-            }
+
+            is IrFunction ->
+                if (!parent.descriptor.isExpect)
+                    null
+                else when (parameter) {
+                    parent.dispatchReceiverParameter -> parent.findActualForExpected().dispatchReceiverParameter!!
+                    parent.extensionReceiverParameter -> parent.findActualForExpected().extensionReceiverParameter!!
+                    else -> {
+                        assert(parent.valueParameters[parameter.index] == parameter)
+                        parent.findActualForExpected().valueParameters[parameter.index]
+                    }
+                }
 
             else -> error(parent)
         }
