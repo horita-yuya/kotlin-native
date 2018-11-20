@@ -144,8 +144,8 @@ internal class ExpectDeclarationsRemoving(val context: Context) : FileLoweringPa
         val parent = parameter.parent
 
         return when (parent) {
-            is IrClass -> parent.findActualForExpected().typeParameters[parent.typeParameters.indexOf(parameter)]
-            is IrFunction -> parent.findActualForExpected().typeParameters[parent.typeParameters.indexOf(parameter)]
+            is IrClass -> parent.findActualForExpected().typeParameters[parameter.index]
+            is IrFunction -> parent.findActualForExpected().typeParameters[parameter.index]
             else -> error(parent)
         }
     }
